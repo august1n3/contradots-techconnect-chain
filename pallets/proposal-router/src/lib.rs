@@ -1,196 +1,396 @@
-//! # Proposal_router Pallet
+//! pallet-proposal-router: full implementation
+//! - Routes proposals scoped to a club (club-scoped governance implemented inside this pallet)
+//!   or global proposals (global governance implemented inside this pallet).
+//! - Stores proposals as SCALE-encoded RuntimeCall bytes and executes the call if the voting
+//!   process passes. Club proposals are voteable by club members; global proposals are voteable
+//!   by all registered members (configurable).
+//! - Designed to interoperate with `pallet-member-registry` helper methods:
+//!     - pallet_member_registry::Pallet::<T>::is_member(who: &T::AccountId) -> bool
+//!     - pallet_member_registry::Pallet::<T>::is_officer_or_admin(who: &T::AccountId, club: ClubId) -> Result<bool, _>
 //!
-//! A pallet with minimal functionality to help developers understand the essential components of
-//! writing a FRAME pallet. It is typically used in beginner tutorials or in Polkadot SDK template
-//! as a starting point for creating a new pallet and **not meant to be used in production**.
-//!
-//! ## Overview
-//!
-//! This template pallet contains basic examples of:
-//! - declaring a storage item that stores a single block-number
-//! - declaring and using events
-//! - declaring and using errors
-//! - a dispatchable function that allows a user to set a new value to storage and emits an event
-//!   upon success
-//! - another dispatchable function that causes a custom error to be thrown
-//!
-//! Each pallet section is annotated with an attribute using the `#[pallet::...]` procedural macro.
-//! This macro generates the necessary code for a pallet to be aggregated into a FRAME runtime.
-//!
-//! To get started with pallet development, consider using this tutorial:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//!
-//! And reading the main documentation of the `frame` crate:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-//!
-//! And looking at the frame [`kitchen-sink`](https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html)
-//! pallet, a showcase of all pallet macros.
-//!
-//! ### Pallet Sections
-//!
-//! The pallet sections in this template are:
-//!
-//! - A **configuration trait** that defines the types and parameters which the pallet depends on
-//!   (denoted by the `#[pallet::config]` attribute). See: [`Config`].
-//! - A **means to store pallet-specific data** (denoted by the `#[pallet::storage]` attribute).
-//!   See: [`storage_types`].
-//! - A **declaration of the events** this pallet emits (denoted by the `#[pallet::event]`
-//!   attribute). See: [`Event`].
-//! - A **declaration of the errors** that this pallet can throw (denoted by the `#[pallet::error]`
-//!   attribute). See: [`Error`].
-//! - A **set of dispatchable functions** that define the pallet's functionality (denoted by the
-//!   `#[pallet::call]` attribute). See: [`dispatchables`].
-//!
-//! Run `cargo doc --package pallet-proposal_router --open` to view this pallet's documentation.
+//! Notes:
+//! - This pallet decodes the stored call bytes into `T::RuntimeCall` before dispatching.
+//!   `T::RuntimeCall` must implement `Dispatchable<RuntimeOrigin = T::RuntimeOrigin>` and `Decode`.
+//! - Execution is performed as a Signed origin for the pallet account; ensure the target calls
+//!   are written to accept a signed origin or to be callable by the pallet account (or adapt).
+//! - Voting windows are block-based with a configurable default; a custom voting_period can be
+//!   passed per-proposal. Quorum and passing thresholds are configurable at runtime via constants.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub use pallet::*;
-
-use frame::{
-    prelude::*,
-    traits::{CheckedAdd, One},
+use frame_support::{
+    pallet_prelude::*,
+    traits::{EnsureOrigin, UnixTime},
+    BoundedVec,
 };
+use frame_system::pallet_prelude::*;
+use sp_runtime::traits::{AccountIdConversion, Saturating};
+use sp_std::prelude::*;
+use codec::{Decode, Encode};
 
-#[cfg(test)]
-mod mock;
 
-#[cfg(test)]
-mod tests;
-
-pub mod weights;
-
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
-
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//
-// To see a full list of `pallet` macros and their use cases, see:
-// <https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/index.html>
-#[frame::pallet]
+#[frame_support::pallet]
 pub mod pallet {
     use super::*;
 
-    /// Configure the pallet by specifying the parameters and types on which it depends.
+    pub type ProposalId = u64;
+    pub type ClubId = u32;
+    pub type Votes = u32;
+    pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
+
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+    pub enum Scope {
+        Club(ClubId),
+        Global,
+    }
+
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+    pub struct Proposal<T: Config> {
+        pub id: ProposalId,
+        pub proposer: T::AccountId,
+        pub scope: Scope,
+        /// SCALE-encoded runtime Call bytes
+        pub call: Vec<u8>,
+        pub metadata: Option<BoundedVec<u8, T::MaxMetadataLen>>,
+        pub start: BlockNumberOf<T>,
+        pub end: BlockNumberOf<T>,
+        pub yea: Votes,
+        pub nay: Votes,
+        pub executed: bool,
+        /// voters list (to prevent double-vote). size bounded for storage limits.
+        pub voters: BoundedVec<T::AccountId, T::MaxVotersPerProposal>,
+        /// quorum in absolute votes required to consider the vote valid
+        pub quorum: Votes,
+        /// passing threshold (simple majority threshold expressed as percent*100, e.g., 5000 = 50.00%)
+        pub pass_threshold: u32,
+        /// the club for club-scoped proposals
+        pub club: Option<ClubId>,
+    }
+
     #[pallet::config]
     pub trait Config: frame_system::Config {
-        /// Because this pallet emits events, it depends on the runtime's definition of an event.
-        /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_runtime_types/index.html>
+        /// Event type
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-        /// A type representing the weights required by the dispatchables of this pallet.
-        type WeightInfo: crate::weights::WeightInfo;
+        /// The concrete Runtime Call type of the runtime (used for decoding/executing proposals).
+        /// Must implement `Dispatchable` with `RuntimeOrigin = T::RuntimeOrigin` and `Decode`.
+        type RuntimeCall: Parameter + Dispatchable<RuntimeOrigin = Self::RuntimeOrigin> + Decode + Encode;
+
+        /// Maximum bytes length permitted for proposal metadata
+        type MaxMetadataLen: Get<u32>;
+
+        /// Maximum number of voters tracked per proposal (prevents unbounded vectors)
+        type MaxVotersPerProposal: Get<u32>;
+
+        /// Default voting period in blocks if not overridden per-proposal
+        type DefaultVotingPeriod: Get<Self::BlockNumber>;
+
+        /// Default quorum (# votes required) for proposals
+        type DefaultQuorum: Get<Votes>;
+
+        /// Default pass threshold (percent * 100; 50% = 5000)
+        type DefaultPassThreshold: Get<u32>;
+
+        /// Origin that can perform privileged router operations (e.g., cancel proposals)
+        type RouterAdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// Helper: time provider (optional; used only for metadata timestamps if needed)
+        type TimeProvider: UnixTime;
+
+        /// WeightInfo for extrinsics (populate by benchmarking)
+        type WeightInfo: WeightInfo;
     }
 
-    #[pallet::pallet]
-    pub struct Pallet<T>(_);
-
-    /// A struct to store a single block-number. Has all the right derives to store it in storage.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_storage_derives/index.html>
-    #[derive(Encode, Decode, MaxEncodedLen, TypeInfo, CloneNoBound, PartialEqNoBound)]
-    #[scale_info(skip_type_params(T))]
-    pub struct CompositeStruct<T: Config> {
-        /// Someone
-        pub(crate) someone: T::AccountId,
-        /// A block number. It's compact encoded to make it more efficient
-        #[codec(compact)]
-        pub(crate) block_number: BlockNumberFor<T>,
-    }
-
-    /// The pallet's storage items.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#storage>
-    /// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/attr.storage.html>
+    // Storage
     #[pallet::storage]
-    pub type Something<T: Config> = StorageValue<_, CompositeStruct<T>>;
+    #[pallet::getter(fn next_proposal_id)]
+    pub(super) type NextProposalId<T: Config> = StorageValue<_, ProposalId, ValueQuery>;
 
-    /// Pallets use events to inform users when important changes are made.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
+    #[pallet::storage]
+    #[pallet::getter(fn proposals)]
+    pub(super) type Proposals<T: Config> =
+        StorageMap<_, Twox64Concat, ProposalId, Proposal<T>, OptionQuery>;
+
+    // Optional index by club -> vector of proposal ids for quick lookup (bounded per club)
+    #[pallet::storage]
+    #[pallet::getter(fn club_proposals)]
+    pub(super) type ClubProposals<T: Config> =
+        StorageMap<_, Twox64Concat, ClubId, BoundedVec<ProposalId, ConstU32<1024>>, OptionQuery>;
+
+    // Events
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// We usually use passive tense for events.
-        SomethingStored {
-            block_number: BlockNumberFor<T>,
-            who: T::AccountId,
-        },
+        ProposalCreated { id: ProposalId, proposer: T::AccountId, scope: Scope },
+        Voted { id: ProposalId, who: T::AccountId, aye: bool, weight: Votes },
+        ProposalExecuted { id: ProposalId, result: DispatchResult },
+        ProposalFailed { id: ProposalId, reason: Vec<u8> },
+        ProposalCancelled { id: ProposalId },
     }
 
-    /// Errors inform users that something went wrong.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
+    // Errors
     #[pallet::error]
     pub enum Error<T> {
-        /// Error names should be descriptive.
-        NoneValue,
-        /// Errors should have helpful documentation associated with them.
-        StorageOverflow,
+        ProposalNotFound,
+        VotingClosed,
+        AlreadyVoted,
+        NotEligibleToPropose,
+        NotMember,
+        NotClubMember,
+        NotAuthorized,
+        ProposalAlreadyExecuted,
+        ExecutionFailed,
+        MetadataTooLarge,
+        VotersOverflow,
+        ClubIndexOverflow,
+        InvalidCallEncoding,
+        QuorumNotReached,
+        ProposalNotPassed,
+    }
+
+    // Weight trait placeholder
+    pub trait WeightInfo {
+        fn propose() -> Weight;
+        fn vote() -> Weight;
+        fn execute() -> Weight;
+        fn cancel() -> Weight;
     }
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
-    /// Dispatchable functions allows users to interact with the pallet and invoke state changes.
-    /// These functions materialize as "extrinsics", which are often compared to transactions.
-    /// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#dispatchables>
+    // Dispatchable calls
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// An example dispatchable that takes a singles value as a parameter, writes the value to
-        /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::call_index(0)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn do_something(origin: OriginFor<T>, bn: u32) -> DispatchResultWithPostInfo {
-            // Check that the extrinsic was signed and get the signer.
-            // This function will return an error if the extrinsic is not signed.
-            // <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_origin/index.html>
+        /// Submit a proposal. `call` should be the SCALE-encoded bytes of `T::RuntimeCall`.
+        ///
+        /// For `Scope::Club(club_id)`:
+        ///   - proposer must be a member of that club (checked via member-registry).
+        ///   - default quorum/threshold/voting_period are used unless overridden via optional params.
+        ///
+        /// For `Scope::Global`:
+        ///   - proposer must be any registered member.
+        #[pallet::weight(T::WeightInfo::propose())]
+        pub fn propose(
+            origin: OriginFor<T>,
+            scope: Scope,
+            call: Vec<u8>,
+            metadata: Option<Vec<u8>>,
+            voting_period: Option<BlockNumberOf<T>>,
+            quorum: Option<Votes>,
+            pass_threshold: Option<u32>,
+        ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
-            // Convert the u32 into a block number. This is possible because the set of trait bounds
-            // defined in [`frame_system::Config::BlockNumber`].
-            let block_number: BlockNumberFor<T> = bn.into();
-
-            // Update storage.
-            <Something<T>>::put(CompositeStruct {
-                someone: who.clone(),
-                block_number,
-            });
-
-            // Emit an event.
-            Self::deposit_event(Event::SomethingStored { block_number, who });
-
-            // Return a successful [`DispatchResultWithPostInfo`] or [`DispatchResult`].
-            Ok(().into())
-        }
-
-        /// An example dispatchable that may throw a custom error.
-        #[pallet::call_index(1)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().reads_writes(1,1))]
-        pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-            let _who = ensure_signed(origin)?;
-
-            // Read a value from storage.
-            match <Something<T>>::get() {
-                // Return an error if the value has not been set.
-                None => Err(Error::<T>::NoneValue)?,
-                Some(mut old) => {
-                    // Increment the value read from storage; will error in the event of overflow.
-                    old.block_number = old
-                        .block_number
-                        .checked_add(&One::one())
-                        // equivalent is to:
-                        // .checked_add(&1u32.into())
-                        // both of which build a `One` instance for the type `BlockNumber`.
-                        .ok_or(Error::<T>::StorageOverflow)?;
-                    // Update the value in storage with the incremented result.
-                    <Something<T>>::put(old);
-                    // Explore how you can rewrite this using
-                    // [`frame_support::storage::StorageValue::mutate`].
-                    Ok(().into())
+            // require proposer's membership eligibility
+            match &scope {
+                Scope::Club(club_id) => {
+                    // ensure proposer is a member of the club
+                    ensure!(
+                        pallet_member_registry::Pallet::<T>::is_member(&who),
+                        Error::<T>::NotMember
+                    );
+                    // ensure proposer is member of that club specifically
+                    let clubs = pallet_member_registry::Pallet::<T>::member_clubs(&who)
+                        .ok_or(Error::<T>::NotMember)?;
+                    ensure!(clubs.iter().any(|c| c == club_id), Error::<T>::NotClubMember);
+                }
+                Scope::Global => {
+                    ensure!(
+                        pallet_member_registry::Pallet::<T>::is_member(&who),
+                        Error::<T>::NotMember
+                    );
                 }
             }
+
+            // metadata size check
+            let metadata_bounded = if let Some(md) = metadata {
+                let max = T::MaxMetadataLen::get() as usize;
+                ensure!(md.len() <= max, Error::<T>::MetadataTooLarge);
+                Some(BoundedVec::try_from(md).map_err(|_| Error::<T>::MetadataTooLarge)?)
+            } else {
+                None
+            };
+
+            // create proposal
+            let id = NextProposalId::<T>::get();
+            let start = <frame_system::Pallet<T>>::block_number();
+            let period = voting_period.unwrap_or_else(|| T::DefaultVotingPeriod::get());
+            let end = start.saturating_add(period);
+            let q = quorum.unwrap_or_else(|| T::DefaultQuorum::get());
+            let pt = pass_threshold.unwrap_or_else(|| T::DefaultPassThreshold::get());
+
+            let proposal = Proposal::<T> {
+                id,
+                proposer: who.clone(),
+                scope: scope.clone(),
+                call: call.clone(),
+                metadata: metadata_bounded,
+                start,
+                end,
+                yea: 0u32,
+                nay: 0u32,
+                executed: false,
+                voters: BoundedVec::try_from(Vec::<T::AccountId>::new()).map_err(|_| Error::<T>::VotersOverflow)?,
+                quorum: q,
+                pass_threshold: pt,
+                club: match scope { Scope::Club(cid) => Some(cid), _ => None },
+            };
+
+            Proposals::<T>::insert(id, proposal);
+
+            if let Scope::Club(cid) = &scope {
+                ClubProposals::<T>::mutate(cid, |maybe| {
+                    if let Some(vec) = maybe {
+                        vec.try_push(id).map_err(|_| Error::<T>::ClubIndexOverflow)
+                    } else {
+                        let mut v = BoundedVec::<ProposalId, ConstU32<1024>>::new();
+                        v.try_push(id).map_err(|_| Error::<T>::ClubIndexOverflow)?;
+                        *maybe = Some(v);
+                        Ok(())
+                    }
+                })?;
+            }
+
+            NextProposalId::<T>::put(id.saturating_add(1));
+            Self::deposit_event(Event::ProposalCreated { id, proposer: who, scope });
+            Ok(())
         }
+
+        /// Vote on a proposal. Voters must be eligible:
+        /// - For club proposals: member of that club
+        /// - For global proposals: any registered member
+        #[pallet::weight(T::WeightInfo::vote())]
+        pub fn vote(
+            origin: OriginFor<T>,
+            proposal_id: ProposalId,
+            aye: bool,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            Proposals::<T>::try_mutate(proposal_id, |maybe| -> DispatchResult {
+                let p = maybe.as_mut().ok_or(Error::<T>::ProposalNotFound)?;
+                let now = <frame_system::Pallet<T>>::block_number();
+                ensure!(now >= p.start && now <= p.end, Error::<T>::VotingClosed);
+                ensure!(!p.voters.contains(&who), Error::<T>::AlreadyVoted);
+
+                // eligibility checks
+                match p.scope {
+                    Scope::Club(cid) => {
+                        // require membership of the club
+                        ensure!(
+                            pallet_member_registry::Pallet::<T>::is_member(&who),
+                            Error::<T>::NotMember
+                        );
+                        let clubs = pallet_member_registry::Pallet::<T>::member_clubs(&who)
+                            .ok_or(Error::<T>::NotMember)?;
+                        ensure!(clubs.iter().any(|c| c == &cid), Error::<T>::NotClubMember);
+                    }
+                    Scope::Global => {
+                        ensure!(
+                            pallet_member_registry::Pallet::<T>::is_member(&who),
+                            Error::<T>::NotMember
+                        );
+                    }
+                }
+
+                // record vote
+                if aye {
+                    p.yea = p.yea.saturating_add(1);
+                } else {
+                    p.nay = p.nay.saturating_add(1);
+                }
+                p.voters.try_push(who.clone()).map_err(|_| Error::<T>::VotersOverflow)?;
+                Self::deposit_event(Event::Voted { id: proposal_id, who, aye, weight: 1u32 });
+                Ok(())
+            })
+        }
+
+        /// Execute proposal if voting period elapsed and it passed.
+        /// Decodes the stored call bytes into `T::RuntimeCall` and dispatches it as Signed(pallet_account).
+        #[pallet::weight(T::WeightInfo::execute())]
+        pub fn execute(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+            // allow anyone to call execute once conditions met
+            let _ = ensure_signed(origin)?;
+
+            Proposals::<T>::try_mutate(proposal_id, |maybe| -> DispatchResult {
+                let p = maybe.as_mut().ok_or(Error::<T>::ProposalNotFound)?;
+                ensure!(!p.executed, Error::<T>::ProposalAlreadyExecuted);
+
+                let now = <frame_system::Pallet<T>>::block_number();
+                ensure!(now > p.end, Error::<T>::VotingClosed);
+
+                // Check quorum
+                let total_votes = p.yea.saturating_add(p.nay);
+                ensure!(total_votes >= p.quorum, Error::<T>::QuorumNotReached);
+
+                // Check pass threshold: (yea / total_votes) * 10000 >= pass_threshold
+                let pass_percent_x100 = if total_votes == 0 {
+                    0u32
+                } else {
+                    // compute percent*100 safely
+                    let numerator = p.yea.saturating_mul(10_000u32);
+                    numerator / total_votes
+                };
+                ensure!(pass_percent_x100 >= p.pass_threshold, Error::<T>::ProposalNotPassed);
+
+                // decode call
+                let decoded_call = T::RuntimeCall::decode(&mut &p.call[..])
+                    .map_err(|_| Error::<T>::InvalidCallEncoding)?;
+
+                // Dispatch as the pallet account (Signed origin)
+                let pallet_origin = frame_system::RawOrigin::Signed(Self::pallet_account()).into();
+                let result = decoded_call.dispatch(pallet_origin);
+
+                p.executed = true;
+
+                match result {
+                    Ok(info) => {
+                        // DispatchOk - emit event
+                        Self::deposit_event(Event::ProposalExecuted { id: proposal_id, result: Ok(()) });
+                        // Optionally remove from club index; we keep history for audit
+                        Ok(())
+                    }
+                    Err(err) => {
+                        // store failure event
+                        let err_bytes = err.encode();
+                        Self::deposit_event(Event::ProposalFailed { id: proposal_id, reason: err_bytes });
+                        Err(Error::<T>::ExecutionFailed.into())
+                    }
+                }
+            })
+        }
+
+        /// Cancel a proposal before execution. Restricted to RouterAdminOrigin (governance or root).
+        #[pallet::weight(T::WeightInfo::cancel())]
+        pub fn cancel(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+            T::RouterAdminOrigin::ensure_origin(origin)?;
+            Proposals::<T>::try_mutate_exists(proposal_id, |maybe| -> DispatchResult {
+                maybe.take().ok_or(Error::<T>::ProposalNotFound)?;
+                Ok(())
+            })?;
+            Self::deposit_event(Event::ProposalCancelled { id: proposal_id });
+            Ok(())
+        }
+    }
+
+    // Pallet helper functions
+    impl<T: Config> Pallet<T> {
+        /// derive a deterministic pallet account id to be used when executing calls
+        pub fn pallet_account() -> T::AccountId {
+            // Use a PalletId-like derivation using module name bytes
+            // In runtime glue you may want to override this to a constant PalletId
+            let entropy = b"proposal_r";
+            pallet_id_from_bytes(entropy).into_account()
+        }
+    }
+
+    // Small helper to produce an account id from a fixed byte slice (not as robust as PalletId)
+    fn pallet_id_from_bytes(b: &[u8]) -> frame_support::PalletId {
+        // If b.len() < 8 pad with zeros; this is purposely simple.
+        let mut id = [0u8; 8];
+        for (i, byte) in b.iter().take(8).enumerate() {
+            id[i] = *byte;
+        }
+        frame_support::PalletId(id)
     }
 }

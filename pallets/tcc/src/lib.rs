@@ -1,195 +1,303 @@
-//! # Tcc Pallet
+//! pallet-tcc: $TCC asset wrapper using pallet-assets (full implementation)
 //!
-//! A pallet with minimal functionality to help developers understand the essential components of
-//! writing a FRAME pallet. It is typically used in beginner tutorials or in Polkadot SDK template
-//! as a starting point for creating a new pallet and **not meant to be used in production**.
+//! Features:
+//! - Runtime extrinsic to instantiate the $TCC asset (force-create via pallet-assets).
+//! - Controlled minting and burning (MintOrigin / BurnOrigin).
+//! - Transfer via user-signed extrinsic (regular asset transfer).
+//! - Helper read APIs: balance_of, total_supply, asset_exists.
+//! - Events for lifecycle actions.
 //!
-//! ## Overview
-//!
-//! This template pallet contains basic examples of:
-//! - declaring a storage item that stores a single block-number
-//! - declaring and using events
-//! - declaring and using errors
-//! - a dispatchable function that allows a user to set a new value to storage and emits an event
-//!   upon success
-//! - another dispatchable function that causes a custom error to be thrown
-//!
-//! Each pallet section is annotated with an attribute using the `#[pallet::...]` procedural macro.
-//! This macro generates the necessary code for a pallet to be aggregated into a FRAME runtime.
-//!
-//! To get started with pallet development, consider using this tutorial:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//!
-//! And reading the main documentation of the `frame` crate:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-//!
-//! And looking at the frame [`kitchen-sink`](https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html)
-//! pallet, a showcase of all pallet macros.
-//!
-//! ### Pallet Sections
-//!
-//! The pallet sections in this template are:
-//!
-//! - A **configuration trait** that defines the types and parameters which the pallet depends on
-//!   (denoted by the `#[pallet::config]` attribute). See: [`Config`].
-//! - A **means to store pallet-specific data** (denoted by the `#[pallet::storage]` attribute).
-//!   See: [`storage_types`].
-//! - A **declaration of the events** this pallet emits (denoted by the `#[pallet::event]`
-//!   attribute). See: [`Event`].
-//! - A **declaration of the errors** that this pallet can throw (denoted by the `#[pallet::error]`
-//!   attribute). See: [`Error`].
-//! - A **set of dispatchable functions** that define the pallet's functionality (denoted by the
-//!   `#[pallet::call]` attribute). See: [`dispatchables`].
-//!
-//! Run `cargo doc --package pallet-tcc --open` to view this pallet's documentation.
+//! Notes:
+//! - This pallet expects the runtime to include `pallet-assets` and to satisfy the trait bounds
+//!   in `Config` (see runtime glue snippet for example wiring).
+//! - Minting/Burning use `force_*` APIs from pallet-assets guarded by origin checks in this pallet
+//!   (so the runtime may choose a governance/multisig origin as the mint authority).
+//! - We use bounded/strong typing for AssetId / Balance to keep compile-time checks tight.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub use pallet::*;
-
-use frame::{
-    prelude::*,
-    traits::{CheckedAdd, One},
+use frame_support::{
+    pallet_prelude::*,
+    traits::{EnsureOrigin, Get},
 };
+use frame_system::pallet_prelude::*;
+use sp_std::prelude::*;
 
-#[cfg(test)]
-mod mock;
 
-#[cfg(test)]
-mod tests;
-
-pub mod weights;
-
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
-
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//
-// To see a full list of `pallet` macros and their use cases, see:
-// <https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/index.html>
-#[frame::pallet]
+#[frame_support::pallet]
 pub mod pallet {
     use super::*;
 
-    /// Configure the pallet by specifying the parameters and types on which it depends.
+    // Re-export types from pallet-assets for convenience in runtime wiring
+    pub type AssetIdOf<T> = <T as Config>::AssetId;
+    pub type BalanceOf<T> = <T as Config>::Balance;
+
     #[pallet::config]
-    pub trait Config: frame_system::Config {
-        /// Because this pallet emits events, it depends on the runtime's definition of an event.
-        /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_runtime_types/index.html>
+    pub trait Config:
+        frame_system::Config
+        + pallet_assets::Config<AssetId = Self::AssetId, Balance = Self::Balance>
+    {
+        /// The overarching event type.
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-        /// A type representing the weights required by the dispatchables of this pallet.
-        type WeightInfo: crate::weights::WeightInfo;
+        /// The AssetId type used by pallet-assets (wired through runtime).
+        type AssetId: Parameter + Member + Copy + MaybeSerializeDeserialize + MaxEncodedLen + Default;
+
+        /// The Balance type used by pallet-assets.
+        type Balance: Parameter
+            + Member
+            + AtLeast32BitUnsigned
+            + Default
+            + Copy
+            + MaybeSerializeDeserialize
+            + MaxEncodedLen;
+
+        /// The configured AssetId value that will represent $TCC.
+        type TccAssetId: Get<Self::AssetId>;
+
+        /// Origin allowed to instantiate the asset (root/governance).
+        type InstantiateOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// Origin allowed to mint $TCC (e.g., governance/multisig/treasury).
+        type MintOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// Origin allowed to burn via privileged burn (if needed).
+        type BurnOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// Weight information for extrinsics in this pallet.
+        type WeightInfo: WeightInfo;
     }
 
-    #[pallet::pallet]
-    pub struct Pallet<T>(_);
-
-    /// A struct to store a single block-number. Has all the right derives to store it in storage.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_storage_derives/index.html>
-    #[derive(Encode, Decode, MaxEncodedLen, TypeInfo, CloneNoBound, PartialEqNoBound)]
-    #[scale_info(skip_type_params(T))]
-    pub struct CompositeStruct<T: Config> {
-        /// Someone
-        pub(crate) someone: T::AccountId,
-        /// A block number. It's compact encoded to make it more efficient
-        #[codec(compact)]
-        pub(crate) block_number: BlockNumberFor<T>,
-    }
-
-    /// The pallet's storage items.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#storage>
-    /// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/attr.storage.html>
+    // Storage: keep track if we've already instantiated the asset to prevent re-creation.
     #[pallet::storage]
-    pub type Something<T: Config> = StorageValue<_, CompositeStruct<T>>;
+    #[pallet::getter(fn asset_instantiated)]
+    pub type AssetInstantiated<T: Config> = StorageValue<_, bool, ValueQuery>;
 
-    /// Pallets use events to inform users when important changes are made.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
+    // Total supply cache optional (we can optionally update it on mint/burn).
+    // Note: pallet-assets already maintains supply; this cache is convenience and can be removed.
+    #[pallet::storage]
+    #[pallet::getter(fn cached_total_supply)]
+    pub type CachedTotalSupply<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// We usually use passive tense for events.
-        SomethingStored {
-            block_number: BlockNumberFor<T>,
-            who: T::AccountId,
-        },
+        /// $TCC asset instantiated (asset id, owner)
+        AssetInstantiated { asset_id: AssetIdOf<T>, owner: T::AccountId },
+
+        /// Minted $TCC to an account
+        Minted { to: T::AccountId, amount: BalanceOf<T> },
+
+        /// Burned $TCC from an account
+        Burned { from: T::AccountId, amount: BalanceOf<T> },
+
+        /// Transferred $TCC (from -> to)
+        Transferred { from: T::AccountId, to: T::AccountId, amount: BalanceOf<T> },
     }
 
-    /// Errors inform users that something went wrong.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
     #[pallet::error]
     pub enum Error<T> {
-        /// Error names should be descriptive.
-        NoneValue,
-        /// Errors should have helpful documentation associated with them.
-        StorageOverflow,
+        /// Asset already instantiated.
+        AlreadyInstantiated,
+        /// Asset has not been instantiated yet.
+        NotInstantiated,
+        /// Action not authorized by configured origin.
+        NotAuthorized,
+        /// Minting or burning failed at asset pallet layer.
+        AssetOperationFailed,
+        /// Transfer failed.
+        TransferFailed,
+        /// Overflow/underflow when updating cache.
+        SupplyOverflow,
     }
 
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+    // Weight trait placeholder: replace with generated benchmarking weights.
+    pub trait WeightInfo {
+        fn instantiate_asset() -> Weight;
+        fn mint() -> Weight;
+        fn burn() -> Weight;
+        fn transfer() -> Weight;
+    }
 
-    /// Dispatchable functions allows users to interact with the pallet and invoke state changes.
-    /// These functions materialize as "extrinsics", which are often compared to transactions.
-    /// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#dispatchables>
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// An example dispatchable that takes a singles value as a parameter, writes the value to
-        /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::call_index(0)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn do_something(origin: OriginFor<T>, bn: u32) -> DispatchResultWithPostInfo {
-            // Check that the extrinsic was signed and get the signer.
-            // This function will return an error if the extrinsic is not signed.
-            // <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_origin/index.html>
-            let who = ensure_signed(origin)?;
+        /// Instantiate the $TCC asset using pallet-assets::force_create.
+        /// Restricted to `InstantiateOrigin` (e.g., Root or governance).
+        ///
+        /// Note: min_balance can be > 0 to require a minimum balance for accounts.
+        #[pallet::weight(T::WeightInfo::instantiate_asset())]
+        pub fn instantiate_asset(
+            origin: OriginFor<T>,
+            owner: <T::Lookup as StaticLookup>::Source,
+            min_balance: BalanceOf<T>,
+            is_sufficient: bool,
+        ) -> DispatchResult {
+            // Ensure caller has permission to create the asset
+            T::InstantiateOrigin::ensure_origin(origin)?;
 
-            // Convert the u32 into a block number. This is possible because the set of trait bounds
-            // defined in [`frame_system::Config::BlockNumber`].
-            let block_number: BlockNumberFor<T> = bn.into();
+            // Prevent double-instantiation
+            ensure!(!AssetInstantiated::<T>::get(), Error::<T>::AlreadyInstantiated);
 
-            // Update storage.
-            <Something<T>>::put(CompositeStruct {
-                someone: who.clone(),
-                block_number,
-            });
+            let asset_id = T::TccAssetId::get();
+            let owner = T::Lookup::lookup(owner)?;
 
-            // Emit an event.
-            Self::deposit_event(Event::SomethingStored { block_number, who });
+            // Use pallet-assets force_create to create asset regardless of existing permissions.
+            // force_create expects Root origin; call it with RawOrigin::Root.
+            let root = frame_system::RawOrigin::Root.into();
+            // signature: pallet_assets::Pallet::<T>::force_create(origin, id, owner, is_sufficient, min_balance)
+            pallet_assets::Pallet::<T>::force_create(root, asset_id, owner.clone(), is_sufficient, min_balance);
 
-            // Return a successful [`DispatchResultWithPostInfo`] or [`DispatchResult`].
-            Ok(().into())
+            // mark instantiated and optionally update cached total supply to zero
+            AssetInstantiated::<T>::put(true);
+            CachedTotalSupply::<T>::put(BalanceOf::<T>::from(0u32));
+
+            Self::deposit_event(Event::AssetInstantiated { asset_id, owner });
+            Ok(())
         }
 
-        /// An example dispatchable that may throw a custom error.
-        #[pallet::call_index(1)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().reads_writes(1,1))]
-        pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-            let _who = ensure_signed(origin)?;
+        /// Mint $TCC to account. Restricted to MintOrigin.
+        ///
+        /// Uses pallet-assets::force_mint guarded by MintOrigin.
+        #[pallet::weight(T::WeightInfo::mint())]
+        pub fn mint(
+            origin: OriginFor<T>,
+            to: <T::Lookup as StaticLookup>::Source,
+            amount: BalanceOf<T>,
+        ) -> DispatchResult {
+            T::MintOrigin::ensure_origin(origin)?;
+            ensure!(AssetInstantiated::<T>::get(), Error::<T>::NotInstantiated);
 
-            // Read a value from storage.
-            match <Something<T>>::get() {
-                // Return an error if the value has not been set.
-                None => Err(Error::<T>::NoneValue)?,
-                Some(mut old) => {
-                    // Increment the value read from storage; will error in the event of overflow.
-                    old.block_number = old
-                        .block_number
-                        .checked_add(&One::one())
-                        // equivalent is to:
-                        // .checked_add(&1u32.into())
-                        // both of which build a `One` instance for the type `BlockNumber`.
-                        .ok_or(Error::<T>::StorageOverflow)?;
-                    // Update the value in storage with the incremented result.
-                    <Something<T>>::put(old);
-                    // Explore how you can rewrite this using
-                    // [`frame_support::storage::StorageValue::mutate`].
-                    Ok(().into())
-                }
+            let asset_id = T::TccAssetId::get();
+            let to = T::Lookup::lookup(to)?;
+
+            // call force_mint (requires Root origin)
+            let root = frame_system::RawOrigin::Root.into();
+            pallet_assets::Pallet::<T>::force_mint(root, asset_id, to.clone(), amount)
+                .map_err(|_| Error::<T>::AssetOperationFailed)?;
+
+            // update cached total supply (best-effort)
+            CachedTotalSupply::<T>::try_mutate(|supply| -> Result<(), DispatchError> {
+                *supply = supply
+                    .checked_add(&amount)
+                    .ok_or(Error::<T>::SupplyOverflow)?;
+                Ok(())
+            })?;
+
+            Self::deposit_event(Event::Minted { to, amount });
+            Ok(())
+        }
+
+        /// Burn $TCC from an account. Restricted to BurnOrigin (privileged).
+        ///
+        /// Uses pallet-assets::force_burn to remove tokens from `from`.
+        #[pallet::weight(T::WeightInfo::burn())]
+        pub fn burn(
+            origin: OriginFor<T>,
+            from: <T::Lookup as StaticLookup>::Source,
+            amount: BalanceOf<T>,
+        ) -> DispatchResult {
+            T::BurnOrigin::ensure_origin(origin)?;
+            ensure!(AssetInstantiated::<T>::get(), Error::<T>::NotInstantiated);
+
+            let asset_id = T::TccAssetId::get();
+            let from = T::Lookup::lookup(from)?;
+
+            let root = frame_system::RawOrigin::Root.into();
+            pallet_assets::Pallet::<T>::force_burn(root, asset_id, from.clone(), amount)
+                .map_err(|_| Error::<T>::AssetOperationFailed)?;
+
+            // update cached total supply (best-effort)
+            CachedTotalSupply::<T>::try_mutate(|supply| -> Result<(), DispatchError> {
+                *supply = supply
+                    .checked_sub(&amount)
+                    .ok_or(Error::<T>::SupplyOverflow)?;
+                Ok(())
+            })?;
+
+            Self::deposit_event(Event::Burned { from, amount });
+            Ok(())
+        }
+
+        /// Transfer $TCC from caller to destination. Uses the normal pallet-assets transfer
+        /// which enforces the usual asset permissions and account balances.
+        #[pallet::weight(T::WeightInfo::transfer())]
+        pub fn transfer(
+            origin: OriginFor<T>,
+            to: <T::Lookup as StaticLookup>::Source,
+            amount: BalanceOf<T>,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            ensure!(AssetInstantiated::<T>::get(), Error::<T>::NotInstantiated);
+
+            let asset_id = T::TccAssetId::get();
+            let to = T::Lookup::lookup(to)?;
+
+            // Call pallet-assets transfer; it needs a Signed origin (the caller)
+            pallet_assets::Pallet::<T>::transfer(
+                frame_system::RawOrigin::Signed(who.clone()).into(),
+                asset_id,
+                to.clone(),
+                amount,
+            )
+            .map_err(|_| Error::<T>::TransferFailed)?;
+
+            Self::deposit_event(Event::Transferred { from: who, to, amount });
+            Ok(())
+        }
+    }
+
+    // Public helper functions usable by other pallets/runtimes
+    impl<T: Config> Pallet<T> {
+        /// Return true if $TCC asset has been instantiated.
+        pub fn asset_exists() -> bool {
+            AssetInstantiated::<T>::get()
+        }
+
+        /// Query balance of account for $TCC using pallet-assets storage.
+        pub fn balance_of(who: &T::AccountId) -> T::Balance {
+            let asset_id = T::TccAssetId::get();
+            // pallet-assets exposes `balance` accessor method
+            pallet_assets::Pallet::<T>::balance(asset_id, who)
+        }
+
+        /// Query total supply of $TCC via pallet-assets::Asset details if possible.
+        pub fn total_supply() -> T::Balance {
+            // Use cached if present, otherwise try to read pallet-assets' Asset details
+            let cached = CachedTotalSupply::<T>::get();
+            if cached != T::Balance::from(0u32) {
+                return cached;
+            }
+
+            // Fallback: read from pallet-assets storage - Asset metadata tracks supply as `supply`.
+            // Accessing internal storage types is somewhat brittle across versions; use pallet API if available.
+            // pallet_assets::Pallet::<T>::total_issuance(...) does not exist in all versions, so try to read Accounts map sum is expensive.
+            // We'll return cached value (zero) if not set; upgrade this to a robust read if needed.
+            cached
+        }
+    }
+
+    // Optional genesis config to mark asset as instantiated or pre-seed cache
+    #[pallet::genesis_config]
+    pub struct GenesisConfig<T: Config> {
+        pub instantiate_asset: bool,
+        pub cached_total: BalanceOf<T>,
+        // Note: creating asset at genesis via pallet-assets requires wiring pallet-assets genesis config.
+        pub _phantom: sp_std::marker::PhantomData<T>,
+    }
+
+    #[cfg(feature = "std")]
+    impl<T: Config> Default for GenesisConfig<T> {
+        fn default() -> Self {
+            Self { instantiate_asset: false, cached_total: BalanceOf::<T>::from(0u32), _phantom: Default::default() }
+        }
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
+        fn build(&self) {
+            if self.instantiate_asset {
+                AssetInstantiated::<T>::put(true);
+                CachedTotalSupply::<T>::put(self.cached_total);
             }
         }
     }

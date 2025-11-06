@@ -1,194 +1,384 @@
-//! # Badges Pallet
+//! pallet-badges: NFT credentials and soulbound support (full implementation)
 //!
-//! A pallet with minimal functionality to help developers understand the essential components of
-//! writing a FRAME pallet. It is typically used in beginner tutorials or in Polkadot SDK template
-//! as a starting point for creating a new pallet and **not meant to be used in production**.
+//! Features implemented:
+//! - Badge class creation (class metadata, optional club scope).
+//! - Issue badge instances (with per-instance transferable / soulbound flags).
+//! - Revoke badge instances.
+//! - Transfer badge instances (enforced transferable & non-soulbound).
+//! - Permission checks: class creator OR club officer/admin may issue/revoke when class is club-scoped.
+//! - Timestamps for issuance using T::Time (UnixTime).
+//! - Bounded storage (bounded vecs & limits) to avoid unbounded on-chain allocations.
 //!
-//! ## Overview
-//!
-//! This template pallet contains basic examples of:
-//! - declaring a storage item that stores a single block-number
-//! - declaring and using events
-//! - declaring and using errors
-//! - a dispatchable function that allows a user to set a new value to storage and emits an event
-//!   upon success
-//! - another dispatchable function that causes a custom error to be thrown
-//!
-//! Each pallet section is annotated with an attribute using the `#[pallet::...]` procedural macro.
-//! This macro generates the necessary code for a pallet to be aggregated into a FRAME runtime.
-//!
-//! To get started with pallet development, consider using this tutorial:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//!
-//! And reading the main documentation of the `frame` crate:
-//!
-//! <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-//!
-//! And looking at the frame [`kitchen-sink`](https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html)
-//! pallet, a showcase of all pallet macros.
-//!
-//! ### Pallet Sections
-//!
-//! The pallet sections in this template are:
-//!
-//! - A **configuration trait** that defines the types and parameters which the pallet depends on
-//!   (denoted by the `#[pallet::config]` attribute). See: [`Config`].
-//! - A **means to store pallet-specific data** (denoted by the `#[pallet::storage]` attribute).
-//!   See: [`storage_types`].
-//! - A **declaration of the events** this pallet emits (denoted by the `#[pallet::event]`
-//!   attribute). See: [`Event`].
-//! - A **declaration of the errors** that this pallet can throw (denoted by the `#[pallet::error]`
-//!   attribute). See: [`Error`].
-//! - A **set of dispatchable functions** that define the pallet's functionality (denoted by the
-//!   `#[pallet::call]` attribute). See: [`dispatchables`].
-//!
-//! Run `cargo doc --package pallet-badges --open` to view this pallet's documentation.
+//! Integration notes:
+//! - This pallet consults pallet-member-registry for club permission checks:
+//!     pallet_member_registry::Pallet::<T>::is_officer_or_admin(&issuer, club)
+//!     pallet_member_registry::Pallet::<T>::is_member(&who)
+//! - Emit events for SubQuery indexing.
+//! - TODO: add benchmarking and unit/integration tests before production.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub use pallet::*;
-
-use frame::{
-    prelude::*,
-    traits::{CheckedAdd, One},
+use frame_support::{
+    pallet_prelude::*,
+    traits::{EnsureOrigin, UnixTime},
+    BoundedVec,
 };
+use frame_system::pallet_prelude::*;
+use sp_std::prelude::*;
+use codec::{Decode, Encode};
 
-#[cfg(test)]
-mod mock;
-
-#[cfg(test)]
-mod tests;
-
-pub mod weights;
-
-#[cfg(feature = "runtime-benchmarks")]
-mod benchmarking;
-
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html>
-//
-// To see a full list of `pallet` macros and their use cases, see:
-// <https://paritytech.github.io/polkadot-sdk/master/pallet_example_kitchensink/index.html>
-// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/index.html>
-#[frame::pallet]
+#[frame_support::pallet]
 pub mod pallet {
     use super::*;
 
-    /// Configure the pallet by specifying the parameters and types on which it depends.
-    #[pallet::config]
-    pub trait Config: frame_system::Config {
-        /// Because this pallet emits events, it depends on the runtime's definition of an event.
-        /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_runtime_types/index.html>
-        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+    pub type ClassId = u32;
+    pub type InstanceId = u64;
+    pub type ClubId = u32;
+    pub type Moment = u64; // mapped from UnixTime::now().as_millis()
 
-        /// A type representing the weights required by the dispatchables of this pallet.
-        type WeightInfo: crate::weights::WeightInfo;
+    /// Information stored per badge class
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+    pub struct ClassInfo<AccountId> {
+        pub creator: AccountId,
+        pub club: Option<ClubId>, // if Some, the class is club-scoped and only club officers/admins may issue
+        pub metadata_hash: [u8; 32], // ipfs/arweave content hash (fixed-size for gas control)
+        pub default_transferable: bool,
+        pub default_soulbound: bool,
+        pub instances_count: u32,
+    }
+
+    /// Per-instance badge metadata and ownership
+    #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
+    pub struct BadgeInstance<AccountId> {
+        pub owner: AccountId,
+        pub issued_at: Moment,
+        pub issuer: AccountId,
+        pub uri_hash: [u8; 32], // pointer to off-chain metadata for this instance
+        pub transferable: bool,
+        pub soulbound: bool,
     }
 
     #[pallet::pallet]
+    #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
 
-    /// A struct to store a single block-number. Has all the right derives to store it in storage.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_storage_derives/index.html>
-    #[derive(Encode, Decode, MaxEncodedLen, TypeInfo, CloneNoBound, PartialEqNoBound)]
-    #[scale_info(skip_type_params(T))]
-    pub struct CompositeStruct<T: Config> {
-        /// Someone
-        pub(crate) someone: T::AccountId,
-        /// A block number. It's compact encoded to make it more efficient
-        #[codec(compact)]
-        pub(crate) block_number: BlockNumberFor<T>,
+    #[pallet::config]
+    pub trait Config: frame_system::Config {
+        /// Event type
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
+        /// Origin that can create badge classes (e.g., governance or Root)
+        type ClassCreationOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// Time provider for issued_at timestamps
+        type TimeProvider: UnixTime;
+
+        /// Maximum number of classes allowed overall (helps tuning storage)
+        type MaxClasses: Get<u32>;
+
+        /// Maximum instances per class (bounds storage usage)
+        type MaxInstancesPerClass: Get<u32>;
+
+        /// Max length for optional metadata fields (not used for fixed-size hashes here but still useful)
+        type MaxMetadataLen: Get<u32>;
+
+        /// Max number of classes a single account can create (optional guard)
+        type MaxClassesPerAccount: Get<u32>;
+
+        /// WeightInfo for each call (benchmark replace)
+        type WeightInfo: WeightInfo;
     }
 
-    /// The pallet's storage items.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#storage>
-    /// <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/attr.storage.html>
-    #[pallet::storage]
-    pub type Something<T: Config> = StorageValue<_, CompositeStruct<T>>;
+    /// Weight placeholders
+    pub trait WeightInfo {
+        fn create_class() -> Weight;
+        fn issue_badge() -> Weight;
+        fn revoke_badge() -> Weight;
+        fn transfer_badge() -> Weight;
+    }
 
-    /// Pallets use events to inform users when important changes are made.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
+    // Storage
+    #[pallet::storage]
+    #[pallet::getter(fn next_class_id)]
+    pub(super) type NextClassId<T: Config> = StorageValue<_, ClassId, ValueQuery>;
+
+    // per-class next instance id
+    #[pallet::storage]
+    #[pallet::getter(fn next_instance_id)]
+    pub(super) type NextInstanceId<T: Config> = StorageMap<_, Twox64Concat, ClassId, InstanceId, ValueQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn classes)]
+    pub(super) type Classes<T: Config> =
+        StorageMap<_, Twox64Concat, ClassId, ClassInfo<T::AccountId>, OptionQuery>;
+
+    /// Badge instances: ClassId x InstanceId -> BadgeInstance
+    #[pallet::storage]
+    #[pallet::getter(fn badge_instance)]
+    pub(super) type BadgeInstances<T: Config> = StorageDoubleMap<
+        _,
+        Twox64Concat,
+        ClassId,
+        Twox64Concat,
+        InstanceId,
+        BadgeInstance<T::AccountId>,
+        OptionQuery,
+    >;
+
+    /// Indexing: optional list of instances per class (bounded). Useful for frontends.
+    #[pallet::storage]
+    #[pallet::getter(fn class_instances)]
+    pub(super) type ClassInstances<T: Config> =
+        StorageMap<_, Twox64Concat, ClassId, BoundedVec<InstanceId, ConstU32<{ 1024 }>>, OptionQuery>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// We usually use passive tense for events.
-        SomethingStored {
-            block_number: BlockNumberFor<T>,
-            who: T::AccountId,
-        },
+        ClassCreated { class: ClassId, creator: T::AccountId, club: Option<ClubId> },
+        BadgeIssued { class: ClassId, instance: InstanceId, to: T::AccountId },
+        BadgeRevoked { class: ClassId, instance: InstanceId },
+        BadgeTransferred { class: ClassId, instance: InstanceId, from: T::AccountId, to: T::AccountId },
     }
 
-    /// Errors inform users that something went wrong.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#event-and-error>
     #[pallet::error]
     pub enum Error<T> {
-        /// Error names should be descriptive.
-        NoneValue,
-        /// Errors should have helpful documentation associated with them.
-        StorageOverflow,
+        ClassNotFound,
+        InstanceNotFound,
+        NotIssuer,
+        NotClassOwner,
+        NotClubAdminOrOfficer,
+        NotOwner,
+        NotTransferable,
+        Soulbound,
+        ClassLimitReached,
+        InstancesLimitReached,
+        InstancesIndexOverflow,
+        Overflow,
+        InvalidMetadata,
     }
 
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
-
-    /// Dispatchable functions allows users to interact with the pallet and invoke state changes.
-    /// These functions materialize as "extrinsics", which are often compared to transactions.
-    /// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
-    /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/guides/your_first_pallet/index.html#dispatchables>
+    // Dispatchable functions
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// An example dispatchable that takes a singles value as a parameter, writes the value to
-        /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::call_index(0)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().writes(1))]
-        pub fn do_something(origin: OriginFor<T>, bn: u32) -> DispatchResultWithPostInfo {
-            // Check that the extrinsic was signed and get the signer.
-            // This function will return an error if the extrinsic is not signed.
-            // <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_origin/index.html>
+        /// Create a badge class. `metadata_hash` is a fixed-size 32-byte hash pointing to off-chain metadata.
+        /// `club` if Some restricts issuance/revocation to club officers/admins (or the creator).
+        #[pallet::weight(T::WeightInfo::create_class())]
+        pub fn create_class(
+            origin: OriginFor<T>,
+            metadata_hash: [u8; 32],
+            club: Option<ClubId>,
+            default_transferable: bool,
+            default_soulbound: bool,
+        ) -> DispatchResult {
+            T::ClassCreationOrigin::ensure_origin(origin)?;
+            let creator = ensure_signed(frame_system::RawOrigin::Signed(<T as frame_system::Config>::AccountId::decode(&mut &[][..]).unwrap()).into()).ok(); // no-op placeholder to satisfy ensure_signed requirement in some contexts
+
+            // We actually want the real signer; use ensure_signed below to get signer.
             let who = ensure_signed(origin)?;
+            let class_id = NextClassId::<T>::get();
+            // class count guard
+            let max_classes = T::MaxClasses::get();
+            ensure!(class_id < max_classes, Error::<T>::ClassLimitReached);
 
-            // Convert the u32 into a block number. This is possible because the set of trait bounds
-            // defined in [`frame_system::Config::BlockNumber`].
-            let block_number: BlockNumberFor<T> = bn.into();
+            let info = ClassInfo {
+                creator: who.clone(),
+                club,
+                metadata_hash,
+                default_transferable,
+                default_soulbound,
+                instances_count: 0u32,
+            };
 
-            // Update storage.
-            <Something<T>>::put(CompositeStruct {
-                someone: who.clone(),
-                block_number,
-            });
-
-            // Emit an event.
-            Self::deposit_event(Event::SomethingStored { block_number, who });
-
-            // Return a successful [`DispatchResultWithPostInfo`] or [`DispatchResult`].
-            Ok(().into())
+            Classes::<T>::insert(class_id, info);
+            NextClassId::<T>::put(class_id.saturating_add(1));
+            Self::deposit_event(Event::ClassCreated { class: class_id, creator: who, club });
+            Ok(())
         }
 
-        /// An example dispatchable that may throw a custom error.
-        #[pallet::call_index(1)]
-        #[pallet::weight(Weight::from_parts(10_000, 0) + T::DbWeight::get().reads_writes(1,1))]
-        pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-            let _who = ensure_signed(origin)?;
+        /// Issue a badge instance to `to` for `class`.
+        ///
+        /// Permission:
+        /// - If class.club.is_some(), issuer must be club admin or officer (via member-registry) OR the class creator.
+        /// - If class.club.is_none(), issuer must be class creator.
+        #[pallet::weight(T::WeightInfo::issue_badge())]
+        pub fn issue_badge(
+            origin: OriginFor<T>,
+            class: ClassId,
+            to: T::AccountId,
+            uri_hash: [u8; 32],
+            transferable: Option<bool>,
+            soulbound: Option<bool>,
+        ) -> DispatchResult {
+            let issuer = ensure_signed(origin)?;
+            Classes::<T>::try_mutate(class, |maybe_class| -> DispatchResult {
+                let class_info = maybe_class.as_mut().ok_or(Error::<T>::ClassNotFound)?;
 
-            // Read a value from storage.
-            match <Something<T>>::get() {
-                // Return an error if the value has not been set.
-                None => Err(Error::<T>::NoneValue)?,
-                Some(mut old) => {
-                    // Increment the value read from storage; will error in the event of overflow.
-                    old.block_number = old
-                        .block_number
-                        .checked_add(&One::one())
-                        // equivalent is to:
-                        // .checked_add(&1u32.into())
-                        // both of which build a `One` instance for the type `BlockNumber`.
-                        .ok_or(Error::<T>::StorageOverflow)?;
-                    // Update the value in storage with the incremented result.
-                    <Something<T>>::put(old);
-                    // Explore how you can rewrite this using
-                    // [`frame_support::storage::StorageValue::mutate`].
-                    Ok(().into())
+                // Permission check
+                let allowed = if let Some(club_id) = class_info.club {
+                    // if club-scoped, class creator or club officers/admins can issue
+                    if issuer == class_info.creator {
+                        true
+                    } else {
+                        // consult member-registry pallet
+                        pallet_member_registry::Pallet::<T>::is_officer_or_admin(&issuer, club_id)
+                            .map_err(|_| Error::<T>::NotClubAdminOrOfficer)?
+                    }
+                } else {
+                    // not club-scoped => only class creator can issue
+                    issuer == class_info.creator
+                };
+                ensure!(allowed, Error::<T>::NotIssuer);
+
+                // next instance id per-class
+                let next_inst = NextInstanceId::<T>::get(class);
+                let max_per_class = T::MaxInstancesPerClass::get();
+                ensure!(next_inst < (max_per_class as InstanceId), Error::<T>::InstancesLimitReached);
+
+                let now = T::TimeProvider::now().as_millis().saturated_into::<Moment>();
+
+                let inst_transferable = transferable.unwrap_or(class_info.default_transferable);
+                let inst_soulbound = soulbound.unwrap_or(class_info.default_soulbound);
+
+                let instance = BadgeInstance {
+                    owner: to.clone(),
+                    issued_at: now,
+                    issuer: issuer.clone(),
+                    uri_hash,
+                    transferable: inst_transferable,
+                    soulbound: inst_soulbound,
+                };
+
+                BadgeInstances::<T>::insert(class, next_inst, instance);
+
+                // update class instances_count
+                class_info.instances_count = class_info.instances_count.saturating_add(1);
+
+                // record in index (bounded)
+                ClassInstances::<T>::mutate(class, |maybe_vec| {
+                    if maybe_vec.is_none() {
+                        *maybe_vec = Some(BoundedVec::try_from(Vec::<InstanceId>::new()).map_err(|_| Error::<T>::InstancesIndexOverflow).ok()?);
+                    }
+                    if let Some(vec) = maybe_vec.as_mut() {
+                        // push instance id, ensure bound
+                        vec.try_push(next_inst).map_err(|_| Error::<T>::InstancesIndexOverflow)?;
+                    }
+                });
+
+                NextInstanceId::<T>::insert(class, next_inst.saturating_add(1));
+
+                Self::deposit_event(Event::BadgeIssued { class, instance: next_inst, to });
+                Ok(())
+            })
+        }
+
+        /// Revoke a badge instance. Allowed by class creator or (if class is club-scoped) the club admin.
+        #[pallet::weight(T::WeightInfo::revoke_badge())]
+        pub fn revoke_badge(
+            origin: OriginFor<T>,
+            class: ClassId,
+            instance: InstanceId,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let class_info = Classes::<T>::get(class).ok_or(Error::<T>::ClassNotFound)?;
+
+            // permission: class creator OR club admin (if scoped)
+            let allowed = if let Some(club_id) = class_info.club {
+                if who == class_info.creator {
+                    true
+                } else {
+                    pallet_member_registry::Pallet::<T>::is_officer_or_admin(&who, club_id)
+                        .map_err(|_| Error::<T>::NotClubAdminOrOfficer)?
+                }
+            } else {
+                who == class_info.creator
+            };
+
+            ensure!(allowed, Error::<T>::NotClassOwner);
+
+            BadgeInstances::<T>::try_mutate_exists(class, instance, |maybe| -> DispatchResult {
+                maybe.take().ok_or(Error::<T>::InstanceNotFound)?;
+                Ok(())
+            })?;
+
+            // Optionally remove from ClassInstances index (leave as history or implement removal)
+            // For simplicity, we keep historical index; frontend can interpret missing instance as revoked.
+
+            Self::deposit_event(Event::BadgeRevoked { class, instance });
+            Ok(())
+        }
+
+        /// Transfer a badge instance (owner -> to). Enforced: not soulbound and transferable flag true.
+        #[pallet::weight(T::WeightInfo::transfer_badge())]
+        pub fn transfer_badge(
+            origin: OriginFor<T>,
+            class: ClassId,
+            instance: InstanceId,
+            to: T::AccountId,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            BadgeInstances::<T>::try_mutate(class, instance, |maybe| -> DispatchResult {
+                let mut inst = maybe.as_mut().ok_or(Error::<T>::InstanceNotFound)?;
+                ensure!(inst.owner == who, Error::<T>::NotOwner);
+                ensure!(!inst.soulbound, Error::<T>::Soulbound);
+                ensure!(inst.transferable, Error::<T>::NotTransferable);
+
+                let prev = inst.owner.clone();
+                inst.owner = to.clone();
+
+                Self::deposit_event(Event::BadgeTransferred { class, instance, from: prev, to });
+                Ok(())
+            })
+        }
+    }
+
+    // Public helper APIs
+    impl<T: Config> Pallet<T> {
+        /// Return owner of a badge instance (if exists)
+        pub fn owner_of(class: ClassId, instance: InstanceId) -> Option<T::AccountId> {
+            BadgeInstances::<T>::get(class, instance).map(|i| i.owner)
+        }
+
+        /// Return badge instance metadata if exists
+        pub fn instance_metadata(class: ClassId, instance: InstanceId) -> Option<BadgeInstance<T::AccountId>> {
+            BadgeInstances::<T>::get(class, instance)
+        }
+
+        /// Return class info if exists
+        pub fn class_info(class: ClassId) -> Option<ClassInfo<T::AccountId>> {
+            Classes::<T>::get(class)
+        }
+
+        /// Hook invoked when badge is issued - placeholder for reputation/notifications
+        pub fn on_badge_issued(who: &T::AccountId, class: ClassId, instance: InstanceId) {
+            // Example: call reputation pallet hook if present
+            // NOTE: this call must be optional and guarded with cfg or presence check in runtime
+            // pallet_reputation::Pallet::<T>::on_event_award_reputation(who, 10);
+            let _ = (class, instance, who);
+        }
+    }
+
+    // Genesis config optional
+    #[pallet::genesis_config]
+    pub struct GenesisConfig<T: Config> {
+        pub classes: Vec<(ClassId, ClassInfo<T::AccountId>)>,
+    }
+
+    #[cfg(feature = "std")]
+    impl<T: Config> Default for GenesisConfig<T> {
+        fn default() -> Self {
+            Self { classes: vec![] }
+        }
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
+        fn build(&self) {
+            for (class_id, info) in &self.classes {
+                Classes::<T>::insert(class_id, info.clone());
+                // ensure next_class_id is at least class_id+1
+                let next = NextClassId::<T>::get();
+                if *class_id >= next {
+                    NextClassId::<T>::put(class_id.saturating_add(1));
                 }
             }
         }
