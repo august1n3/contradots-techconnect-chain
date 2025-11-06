@@ -1,11 +1,11 @@
-use polkadot_sdk::cumulus_primitives_core::ParaId;
 use parachain_template_runtime as runtime;
-use runtime::{AccountId, AuraId, Signature, EXISTENTIAL_DEPOSIT};
-use polkadot_sdk::sc_service::{self, ChainType, GenericChainSpec};
+use polkadot_sdk::cumulus_primitives_core::ParaId;
 use polkadot_sdk::sc_chain_spec::{self, ChainSpecExtension, ChainSpecGroup};
-use serde::{Deserialize, Serialize};
+use polkadot_sdk::sc_service::{self, ChainType, GenericChainSpec};
 use polkadot_sdk::sp_core::{sr25519, Pair, Public};
 use polkadot_sdk::sp_runtime::traits::{IdentifyAccount, Verify};
+use runtime::{AccountId, AuraId, Signature, EXISTENTIAL_DEPOSIT};
+use serde::{Deserialize, Serialize};
 
 /// Specialized `ChainSpec` for the normal parachain runtime.
 pub type ChainSpec = sc_service::GenericChainSpec<Extensions>;

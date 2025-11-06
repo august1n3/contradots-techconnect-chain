@@ -1,7 +1,7 @@
-//! Benchmarking setup for pallet-template
+#![cfg(feature = "runtime-benchmarks")]
 
 use super::*;
-use frame::{deps::frame_benchmarking::v2::*, prelude::*};
+use frame::deps::frame_benchmarking::v2::*;
 
 #[benchmarks]
 mod benchmarks {
@@ -24,10 +24,11 @@ mod benchmarks {
 
     #[benchmark]
     fn cause_error() {
+        let caller: T::AccountId = whitelisted_caller();
         Something::<T>::put(CompositeStruct {
             block_number: 100u32.into(),
+            someone: caller.clone(),
         });
-        let caller: T::AccountId = whitelisted_caller();
         #[extrinsic_call]
         cause_error(RawOrigin::Signed(caller));
 

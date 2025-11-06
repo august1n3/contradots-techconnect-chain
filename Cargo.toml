@@ -10,7 +10,7 @@ default-members = ["pallets/template", "runtime"]
 members = [
     "node",
     "pallets/template",
-    "runtime",
+    "runtime", "member-registry",
 ]
 resolver = "2"
 

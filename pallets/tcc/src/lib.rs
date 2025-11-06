@@ -1,4 +1,4 @@
-//! # Template Pallet
+//! # Tcc Pallet
 //!
 //! A pallet with minimal functionality to help developers understand the essential components of
 //! writing a FRAME pallet. It is typically used in beginner tutorials or in Polkadot SDK template
@@ -43,11 +43,16 @@
 //! - A **set of dispatchable functions** that define the pallet's functionality (denoted by the
 //!   `#[pallet::call]` attribute). See: [`dispatchables`].
 //!
-//! Run `cargo doc --package pallet-template --open` to view this pallet's documentation.
+//! Run `cargo doc --package pallet-tcc --open` to view this pallet's documentation.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub use pallet::*;
+
+use frame::{
+    prelude::*,
+    traits::{CheckedAdd, One},
+};
 
 #[cfg(test)]
 mod mock;
@@ -68,11 +73,13 @@ mod benchmarking;
 // <https://paritytech.github.io/polkadot-sdk/master/frame_support/pallet_macros/index.html>
 #[frame::pallet]
 pub mod pallet {
-    use frame::prelude::*;
+    use super::*;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
     pub trait Config: frame_system::Config {
+        /// Because this pallet emits events, it depends on the runtime's definition of an event.
+        /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_runtime_types/index.html>
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
         /// A type representing the weights required by the dispatchables of this pallet.
@@ -84,12 +91,13 @@ pub mod pallet {
 
     /// A struct to store a single block-number. Has all the right derives to store it in storage.
     /// <https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/frame_storage_derives/index.html>
-    #[derive(
-        Encode, Decode, MaxEncodedLen, TypeInfo, CloneNoBound, PartialEqNoBound, DefaultNoBound,
-    )]
+    #[derive(Encode, Decode, MaxEncodedLen, TypeInfo, CloneNoBound, PartialEqNoBound)]
     #[scale_info(skip_type_params(T))]
     pub struct CompositeStruct<T: Config> {
-        /// A block number.
+        /// Someone
+        pub(crate) someone: T::AccountId,
+        /// A block number. It's compact encoded to make it more efficient
+        #[codec(compact)]
         pub(crate) block_number: BlockNumberFor<T>,
     }
 
@@ -145,7 +153,10 @@ pub mod pallet {
             let block_number: BlockNumberFor<T> = bn.into();
 
             // Update storage.
-            <Something<T>>::put(CompositeStruct { block_number });
+            <Something<T>>::put(CompositeStruct {
+                someone: who.clone(),
+                block_number,
+            });
 
             // Emit an event.
             Self::deposit_event(Event::SomethingStored { block_number, who });
@@ -169,7 +180,7 @@ pub mod pallet {
                     old.block_number = old
                         .block_number
                         .checked_add(&One::one())
-                        // ^^ equivalent is to:
+                        // equivalent is to:
                         // .checked_add(&1u32.into())
                         // both of which build a `One` instance for the type `BlockNumber`.
                         .ok_or(Error::<T>::StorageOverflow)?;

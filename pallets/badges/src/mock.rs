@@ -1,12 +1,12 @@
+use crate::frame_system::{mocking::MockBlock, GenesisConfig};
 use frame::{
-    deps::{frame_support::weights::constants::RocksDbWeight, frame_system::GenesisConfig},
-    prelude::*,
+    deps::frame_support::{derive_impl, runtime, weights::constants::RocksDbWeight},
     runtime::prelude::*,
     testing_prelude::*,
 };
 
 // Configure a mock runtime to test the pallet.
-#[frame_construct_runtime]
+#[runtime]
 mod test_runtime {
     #[runtime::runtime]
     #[runtime::derive(
@@ -18,15 +18,14 @@ mod test_runtime {
         RuntimeHoldReason,
         RuntimeSlashReason,
         RuntimeLockId,
-        RuntimeTask,
-        RuntimeViewFunction
+        RuntimeTask
     )]
     pub struct Test;
 
     #[runtime::pallet_index(0)]
     pub type System = frame_system;
     #[runtime::pallet_index(1)]
-    pub type Template = crate;
+    pub type Badges = crate;
 }
 
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
@@ -43,7 +42,7 @@ impl crate::Config for Test {
 }
 
 // Build genesis storage according to the mock runtime.
-pub fn new_test_ext() -> TestState {
+pub fn new_test_ext() -> sp_io::TestExternalities {
     GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap()

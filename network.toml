@@ -1,13 +1,16 @@
+[settings]
+timeout = 3000
+
 [relaychain]
 chain = "paseo-local"
+default_command = "polkadot"
 
 [[relaychain.nodes]]
 name = "alice"
 validator = true
+[relaychain.nodes.node] # Configuration for the node's execution
+args = ["--blocks-pruning", "256", "--state-pruning", "256"]
 
-[[relaychain.nodes]]
-name = "bob"
-validator = true
 
 [[parachains]]
 id = 2000
