@@ -1,31 +1,37 @@
 [package]
-name = "pallet-proposal_router"
-authors = ["Anonymous"]
-description = "Frame Pallet"
+name = "pallet-proposal-router"
 version = "0.1.0"
-license = "Unlicense"
 edition = "2021"
+publish = false
 
-[package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu"]
+[lib]
+name = "pallet_proposal_router"
+path = "src/lib.rs"
+crate-type = ["rlib"]
 
 [dependencies]
-codec = { package = "parity-scale-codec", version = "3.6.1", default-features = false, features = [
-	"derive",
-] }
-scale-info = { version = "2.11.1", default-features = false, features = [
-	"derive",
-] }
-frame = { version = "0.3.0", package = "polkadot-sdk-frame", default-features = false, features = ["experimental", "runtime"] }
-
-
+pallet-member-registry = { path = "../member-registry", default-features = false }
+frame-support = { version = "43.0.0", default-features = false }
+frame-system = { version = "43.0.0", default-features = false }
+sp-runtime = { version = "44.0.0", default-features = false }
+sp-std = { version = "14.0.0", default-features = false }
+parity-scale-codec = { version = "3.7.5", default-features = false, features = ["derive", "max-encoded-len"] }
+scale-info = { version = "2.11.0", default-features = false, features = ["derive"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [features]
 default = ["std"]
 std = [
-	"codec/std",
-	"frame/std",
-	"scale-info/std",
+    "pallet-member-registry/std",
+    "frame-support/std",
+    "frame-system/std",
+    "sp-runtime/std", 
+    "sp-std/std",
+    "parity-scale-codec/std",
+    "scale-info/std",
+    "serde/std",
 ]
-runtime-benchmarks = ["frame/runtime-benchmarks"]
-try-runtime = ["frame/try-runtime"]
+
+[dev-dependencies]
+pallet-member-registry = { path = "../member-registry" }
+pallet-balances = { version = "44.0.0", default-features = false, features = ["std"]  }

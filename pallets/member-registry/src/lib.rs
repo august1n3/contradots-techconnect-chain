@@ -14,19 +14,21 @@
 
 
 
+//! pallet-member-registry: canonical membership, clubs, roles and attestations (fixed)
+//! - Fixes: added #[pallet::without_storage_info], removed stray imports, adjusted top-level attributes
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub use pallet::*;
-
-use frame_support::{
-    pallet_prelude::*,
-    traits::{EnsureOrigin, StoredMap, UnixTime},
-    BoundedVec,
-};
-
+use frame_support::{pallet_prelude::*, BoundedVec};
 use frame_system::pallet_prelude::*;
-use sp_runtime::traits::Saturating;
-use sp_std::vec::Vec;
+use frame_support::traits::UnixTime;
+use frame_support::traits::EnsureOrigin;
+use sp_runtime::traits::SaturatedConversion;
+use sp_std::{vec::Vec, marker::PhantomData};
+use codec::{Encode, Decode};
+use scale_info::TypeInfo;
+
+pub mod weights;
+pub use weights::WeightInfo;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -52,6 +54,7 @@ pub mod pallet {
         pub joined_at: Moment,
         pub status: MemberStatus,
         pub metadata: Option<[u8; 32]>, // pointer to off-chain profile (IPFS hash)
+        pub _marker: PhantomData<AccountId>,
     }
 
     /// Stored information about a club
@@ -77,20 +80,16 @@ pub mod pallet {
     }
 
     #[pallet::pallet]
-    #[pallet::generate_store(pub(super) trait Store)]
-    // `without_storage_info` may be removed if compiling against newer Substrate where it's not needed.
+    #[pallet::without_storage_info]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
     pub trait Config: frame_system::Config {
-        /// Event type
-        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-
         /// Origin that can perform privileged cluster-wide membership ops (e.g., initial club creation).
         /// In many deployments this can be `EnsureRoot<Self::RuntimeOrigin>`.
         type RootClubAdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
-        /// Time provider - optional, used for timestamping attestations and joins.
+        /// Time provider - used for timestamping attestations and joins.
         type Time: UnixTime;
 
         /// WeightInfo for benchmarking; provide concrete weights in runtime.
@@ -171,6 +170,7 @@ pub mod pallet {
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         /// Create a new club and set admin. Restricted to RootClubAdminOrigin.
+        #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::create_club())]
         pub fn create_club(
             origin: OriginFor<T>,
@@ -184,7 +184,7 @@ pub mod pallet {
             let club = ClubInfo {
                 name,
                 admin: admin.clone(),
-                officers: BoundedVec::try_from(vec![]).map_err(|_| Error::<T>::Overflow)?,
+                officers: BoundedVec::try_from(sp_std::vec![]).map_err(|_| Error::<T>::Overflow)?,
                 members_count: 0,
                 metadata,
             };
@@ -196,6 +196,7 @@ pub mod pallet {
         }
 
         /// Add an officer to a club. Must be called by the club admin (signed origin).
+        #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::add_officer())]
         pub fn add_officer(
             origin: OriginFor<T>,
@@ -204,7 +205,7 @@ pub mod pallet {
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             Clubs::<T>::try_mutate(club, |maybe| -> DispatchResult {
-                let mut c = maybe.as_mut().ok_or(Error::<T>::ClubNotFound)?;
+                let c = maybe.as_mut().ok_or(Error::<T>::ClubNotFound)?;
                 ensure!(c.admin == who, Error::<T>::NotClubAdmin);
                 c.officers.try_push(officer.clone()).map_err(|_| Error::<T>::Overflow)?;
                 Ok(())
@@ -214,6 +215,7 @@ pub mod pallet {
         }
 
         /// Remove an officer from a club. Must be called by the club admin.
+        #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::remove_officer())]
         pub fn remove_officer(
             origin: OriginFor<T>,
@@ -236,6 +238,7 @@ pub mod pallet {
 
         /// Officers create attestations for a subject to allow them to register.
         /// This is a signed extrinsic by an officer/admin and stores an attestation record.
+        #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::create_attestation())]
         pub fn create_attestation(
             origin: OriginFor<T>,
@@ -272,6 +275,7 @@ pub mod pallet {
         }
 
         /// Register self as a member of a club using an attestation created by an officer.
+        #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::register_member())]
         pub fn register_member(
             origin: OriginFor<T>,
@@ -303,13 +307,7 @@ pub mod pallet {
                 ensure!(!Members::<T>::contains_key(&who), Error::<T>::AlreadyMember);
 
                 // create member record
-                let member = MemberInfo {
-                    clubs: BoundedVec::try_from(vec![att.club]).map_err(|_| Error::<T>::Overflow)?,
-                    roles: BoundedVec::try_from(vec![]).map_err(|_| Error::<T>::Overflow)?,
-                    joined_at: att.created_at,
-                    status: MemberStatus::Active,
-                    metadata: None,
-                };
+                let member = MemberInfo {clubs:BoundedVec::try_from(sp_std::vec![att.club]).map_err(|_|Error:: <T> ::Overflow)? ,roles:BoundedVec::try_from(sp_std::vec![]).map_err(|_|Error:: <T> ::Overflow)? ,joined_at:att.created_at,status:MemberStatus::Active,metadata:None, _marker: PhantomData };
 
                 Members::<T>::insert(&who, member);
                 // increment club member count
@@ -319,17 +317,21 @@ pub mod pallet {
                     }
                 });
 
+                // save club id before marking attestation used
+                let club_id = att.club;
+                
                 // mark attestation used and persist
                 att.used = true;
                 *maybe_att = Some(att);
 
-                Self::deposit_event(Event::MemberRegistered { who: who.clone(), club: att.club });
-                Self::deposit_event(Event::AttestationUsed { id: attestation_id, subject: who, club: att.club });
+                Self::deposit_event(Event::MemberRegistered { who: who.clone(), club: club_id });
+                Self::deposit_event(Event::AttestationUsed { id: attestation_id, subject: who, club: club_id });
                 Ok(())
             })
         }
 
         /// Add a member directly (club admin only) - creates MemberInfo immediately.
+        #[pallet::call_index(5)]
         #[pallet::weight(T::WeightInfo::add_member_admin())]
         pub fn add_member_admin(
             origin: OriginFor<T>,
@@ -343,13 +345,7 @@ pub mod pallet {
             ensure!(!Members::<T>::contains_key(&subject), Error::<T>::AlreadyMember);
 
             let now = T::Time::now().as_millis().saturated_into::<Moment>();
-            let member = MemberInfo {
-                clubs: BoundedVec::try_from(vec![club]).map_err(|_| Error::<T>::Overflow)?,
-                roles: BoundedVec::try_from(vec![]).map_err(|_| Error::<T>::Overflow)?,
-                joined_at: now,
-                status: MemberStatus::Active,
-                metadata: None,
-            };
+            let member = MemberInfo {clubs:BoundedVec::try_from(sp_std::vec![club]).map_err(|_|Error:: <T> ::Overflow)? ,roles:BoundedVec::try_from(sp_std::vec![]).map_err(|_|Error:: <T> ::Overflow)? ,joined_at:now,status:MemberStatus::Active,metadata:None, _marker: PhantomData };
 
             Members::<T>::insert(&subject, member);
             Clubs::<T>::mutate(club, |maybe| {
@@ -363,6 +359,7 @@ pub mod pallet {
         }
 
         /// Remove (or mark removed) a member from a club (club admin only).
+        #[pallet::call_index(6)]
         #[pallet::weight(T::WeightInfo::remove_member_admin())]
         pub fn remove_member_admin(
             origin: OriginFor<T>,
@@ -392,15 +389,14 @@ pub mod pallet {
         }
 
         /// Assign a role to a member (club admin only in this simple model)
+        #[pallet::call_index(7)]
         #[pallet::weight(T::WeightInfo::set_role())]
         pub fn set_role(
             origin: OriginFor<T>,
             subject: T::AccountId,
             role: RoleId,
         ) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-            // for simplicity require root or global admin here; adapt to club-scoped checks if needed
-            // In production you likely want club-scoped role setting: check that `who` is club admin for the club.
+            // require root/gov origin for safety
             T::RootClubAdminOrigin::ensure_origin(origin)?;
             Members::<T>::try_mutate(&subject, |maybe| -> DispatchResult {
                 let m = maybe.as_mut().ok_or(Error::<T>::MemberNotFound)?;
@@ -412,19 +408,16 @@ pub mod pallet {
         }
 
         /// Revoke (delete) an attestation (admin/officer or root)
+        #[pallet::call_index(8)]
         #[pallet::weight(T::WeightInfo::create_attestation())]
         pub fn revoke_attestation(origin: OriginFor<T>, attestation_id: AttestationId) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            // allow root or the attestor who created it to revoke.
             Attestations::<T>::try_mutate_exists(attestation_id, |maybe| -> DispatchResult {
                 let att = maybe.as_mut().ok_or(Error::<T>::AttestationNotFound)?;
-                // if signer is root admin allow; otherwise only attestor or club admin can revoke.
                 let club_info = Clubs::<T>::get(att.club).ok_or(Error::<T>::ClubNotFound)?;
                 if who != att.attestor && who != club_info.admin {
-                    // check if root origin
-                    ensure!(false, Error::<T>::NotClubAdmin);
+                    return Err(Error::<T>::NotClubAdmin.into());
                 }
-                // remove attestation
                 *maybe = None;
                 Ok(())
             })?;
@@ -457,3 +450,5 @@ pub mod pallet {
         }
     }
 }
+
+pub use pallet::*;   

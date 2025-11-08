@@ -1,31 +1,42 @@
 [package]
 name = "pallet-rewards"
-authors = ["Anonymous"]
-description = "Frame Pallet"
 version = "0.1.0"
-license = "Unlicense"
 edition = "2021"
+publish = false
 
-[package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu"]
+[lib]
+name = "pallet_rewards"
+path = "src/lib.rs"
+crate-type = ["rlib"]
 
 [dependencies]
-codec = { package = "parity-scale-codec", version = "3.6.1", default-features = false, features = [
-	"derive",
-] }
-scale-info = { version = "2.11.1", default-features = false, features = [
-	"derive",
-] }
-frame = { version = "0.3.0", package = "polkadot-sdk-frame", default-features = false, features = ["experimental", "runtime"] }
+frame-support = { version = "43.0.0", default-features = false }
+frame-system = { version = "43.0.0", default-features = false }
+sp-runtime = { version = "44.0.0", default-features = false }
+sp-std = { version = "14.0.0", default-features = false }
+codec = { version = "3.7.5", package = "parity-scale-codec", default-features = false }
+pallet-timestamp = { version = "42.0.0", default-features = false }
+scale-info = { version = "2.0", package = "scale-info", default-features = false }
+pallet-member-registry = { path = "../member-registry", default-features = false }
+serde = { version = "1.0", default-features = false, optional = true }
 
-
+[dev-dependencies]
+pallet-balances = { version = "44.0.0", default-features = false }
 
 [features]
 default = ["std"]
 std = [
-	"codec/std",
-	"frame/std",
-	"scale-info/std",
+    "frame-support/std",
+    "frame-system/std",
+    "sp-runtime/std",
+    "sp-std/std",
+    "codec/std",
+    "scale-info/std",
+    "pallet-timestamp/std",
+    "pallet-member-registry/std",
+    "serde",
 ]
-runtime-benchmarks = ["frame/runtime-benchmarks"]
-try-runtime = ["frame/try-runtime"]
+runtime-benchmarks = [
+    "frame-support/runtime-benchmarks",
+    "frame-system/runtime-benchmarks",
+]
