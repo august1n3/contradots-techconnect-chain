@@ -28,8 +28,7 @@ use sp_std::prelude::*;
 use sp_runtime::traits::SaturatedConversion;
 use codec::{Decode, Encode};
 
-pub mod weights;
-pub use weights::WeightInfo;
+
 
 #[frame_support::pallet]
 pub mod pallet {

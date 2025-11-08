@@ -27,8 +27,7 @@ use sp_std::{vec::Vec, marker::PhantomData};
 use codec::{Encode, Decode};
 use scale_info::TypeInfo;
 
-pub mod weights;
-pub use weights::WeightInfo;
+
 
 #[frame_support::pallet]
 pub mod pallet {

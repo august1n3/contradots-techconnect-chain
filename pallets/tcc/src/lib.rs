@@ -16,9 +16,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub mod weights;
-mod mock;
-pub use weights::WeightInfo;
+
 
 use frame_support::{
     pallet_prelude::*,
