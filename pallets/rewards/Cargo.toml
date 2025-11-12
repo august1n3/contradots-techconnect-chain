@@ -16,7 +16,7 @@ sp-runtime = { version = "44.0.0", default-features = false }
 sp-std = { version = "14.0.0", default-features = false }
 codec = { version = "3.7.5", package = "parity-scale-codec", default-features = false }
 pallet-timestamp = { version = "42.0.0", default-features = false }
-scale-info = { version = "2.0", package = "scale-info", default-features = false }
+scale-info = { version = "2.11.1", package = "scale-info", default-features = false }
 pallet-member-registry = { path = "../member-registry", default-features = false }
 serde = { version = "1.0", default-features = false, optional = true }
 
