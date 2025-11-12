@@ -1,9 +1,11 @@
 [workspace]
+resolver = "2"
 members = [
     "pallets/member-registry",
     "pallets/badges",
     "pallets/tcc",
     "pallets/rewards",
     "pallets/proposal-router",
-    "runtime"
+    "runtime",
+    "node"
 ]
