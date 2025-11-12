@@ -1,0 +1,43 @@
+[package]
+name = "parachain-template-node"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Direct deps (no workspace-managed deps)
+clap = { version = "4.5.51", features = ["derive"] }
+color-print = "0.3.6"
+docify = "0.4.1"
+futures = "0.3.30"
+jsonrpsee = { version = "0.26.0", features = ["server"], default-features = false }
+log = { version = "0.4.28", default-features = true }
+serde = { version = "1.0", features = ["derive", "alloc"], default-features = false }
+cumulus-primitives-core = { version = "0.21.0" }
+sp-api = { version = "39.0.0" }
+sp-block-builder = { version = "39.0.0" }
+sp-core = { version = "38.1.0" }
+sp-runtime = { version = "44.0.0" }
+sp-keystore = { version = "0.44.1" }
+sp-consensus-aura = { version = "0.45.0" }
+sp-timestamp = { version = "39.0.0" }
+
+# Runtime as a path dependency; keep the alias name expected by your node code
+techconnectchain-runtime = { package = "techconnectchain-runtime", path = "../runtime", default-features = false }
+
+# Polkadot SDK meta crate (version aligned with FRAME 43 / SP 39 line)
+polkadot-sdk = { version = "2507.2.0", default-features = false, features = ["node"] }
+
+# Prometheus endpoint crate name on crates.io is "substrate-prometheus-endpoint"
+prometheus-endpoint = { package = "substrate-prometheus-endpoint", version = "0.17.7", default-features = true }
+
+[build-dependencies]
+polkadot-sdk = { version = "2507.2.0", default-features = false, features = ["substrate-build-script-utils"] }
+
+[features]
+default = ["std"]
+std = [
+	"log/std",
+	"techconnectchain-runtime/std",
+	"polkadot-sdk/std",
+]
