@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+name = "techconnectchain_runtime"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
 [features]
 default = ["std"]
 std = [
@@ -29,6 +34,7 @@ std = [
     "pallet-rewards/std",
     "pallet-proposal-router/std",
     "scale-info/std",
+    "pallet-sudo/std",
 ]
 metadata-hash = []
 substrate-wasm-builder = ["dep:substrate-wasm-builder"]
@@ -50,6 +56,7 @@ sp-std = { version = "14.0.0", default-features = false }
 pallet-balances = { version = "44.0.0", default-features = false }
 pallet-timestamp = { version = "42.0.0", default-features = false }
 pallet-assets = { version = "46.1.0", default-features = false }
+pallet-sudo = { version = "43.0.0", default-features = false }
 frame-executive = { version = "43.0.0", default-features = false }
 sp-api = { version = "39.0.0", default-features = false }
 sp-block-builder = { version = "39.0.0", default-features = false }
@@ -63,8 +70,6 @@ parity-scale-codec = "3.7.5"
 scale-info = { version = "2.11.1", default-features = false, features = ["derive"] }
 
 [build-dependencies]
-substrate-wasm-builder = { version = "29.0.0", optional = true}
+substrate-wasm-builder = { version = "29.0.0"}
 
-[lib]
-path = "src/lib.rs"
 
