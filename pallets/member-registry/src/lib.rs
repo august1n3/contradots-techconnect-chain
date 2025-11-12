@@ -18,6 +18,10 @@
 //! - Fixes: added #[pallet::without_storage_info], removed stray imports, adjusted top-level attributes
 #![cfg_attr(not(feature = "std"), no_std)]
 
+mod mock;
+
+mod tests;
+
 use frame_support::{pallet_prelude::*, BoundedVec};
 use frame_system::pallet_prelude::*;
 use frame_support::traits::UnixTime;
