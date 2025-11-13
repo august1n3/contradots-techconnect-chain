@@ -1,0 +1,9 @@
+[toolchain]
+channel = "nightly-2025-11-04" # Use the specific date from your compiler
+# The Substrate build process often requires the 'default' component
+# for certain internal tools.
+components = [ "rustfmt", "clippy", "rust-src" ]
+
+targets = [
+    "wasm32-unknown-unknown",
+]

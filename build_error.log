@@ -1,0 +1,51 @@
+⚡ Found 4 strongly connected components which includes at least one cycle each
+cycle(001) ∈ α: DisputeCoordinator ~~{"DisputeDistributionMessage"}~~> DisputeDistribution ~~{"DisputeCoordinatorMessage"}~~>  *
+cycle(002) ∈ β: ApprovalVoting ~~{"ApprovalDistributionMessage"}~~> ApprovalDistribution ~~{"ApprovalVotingMessage"}~~>  *
+cycle(003) ∈ γ: CandidateBacking ~~{"CollatorProtocolMessage"}~~> CollatorProtocol ~~{"CandidateBackingMessage"}~~>  *
+cycle(004) ∈ δ: NetworkBridgeRx ~~{"GossipSupportMessage"}~~> GossipSupport ~~{"NetworkBridgeRxMessage"}~~>  *
+   Compiling polkadot-node-subsystem-util v25.0.0
+   Compiling cumulus-client-parachain-inherent v0.19.0
+   Compiling polkadot-node-core-pvf v25.0.0
+   Compiling cumulus-relay-chain-streams v0.3.0
+   Compiling cumulus-client-network v0.25.0
+   Compiling frame-benchmarking-cli v50.0.0
+   Compiling polkadot-approval-distribution v25.0.0
+   Compiling polkadot-node-core-approval-voting v25.0.0
+   Compiling polkadot-node-core-candidate-validation v25.0.0
+   Compiling polkadot-node-core-pvf-checker v25.0.0
+   Compiling polkadot-node-core-dispute-coordinator v25.0.0
+   Compiling polkadot-node-core-backing v25.0.0
+   Compiling polkadot-node-core-approval-voting-parallel v0.8.0
+   Compiling polkadot-node-core-prospective-parachains v24.0.0
+   Compiling polkadot-availability-bitfield-distribution v25.0.0
+   Compiling polkadot-node-core-av-store v25.0.0
+   Compiling polkadot-statement-distribution v25.0.0
+   Compiling polkadot-node-core-bitfield-signing v25.0.0
+   Compiling polkadot-node-collation-generation v25.0.0
+   Compiling polkadot-availability-recovery v25.0.0
+   Compiling polkadot-availability-distribution v25.0.0
+   Compiling polkadot-node-core-chain-selection v25.0.0
+   Compiling polkadot-collator-protocol v25.0.0
+   Compiling polkadot-dispute-distribution v25.0.0
+   Compiling polkadot-node-core-provisioner v25.0.0
+   Compiling polkadot-gossip-support v25.0.0
+   Compiling cumulus-client-pov-recovery v0.25.0
+   Compiling polkadot-network-bridge v25.0.0
+   Compiling polkadot-node-core-chain-api v25.0.0
+   Compiling polkadot-node-core-runtime-api v25.0.0
+   Compiling polkadot-node-core-parachains-inherent v25.0.0
+   Compiling polkadot-service v27.0.0
+   Compiling cumulus-client-consensus-common v0.25.0
+   Compiling cumulus-client-bootnodes v0.4.0
+   Compiling cumulus-relay-chain-rpc-interface v0.25.0
+   Compiling cumulus-client-collator v0.25.0
+   Compiling cumulus-client-consensus-aura v0.25.0
+   Compiling cumulus-client-consensus-relay-chain v0.25.0
+   Compiling techconnectchain-runtime v0.1.0 (/Volumes/DEVLIFE/PolkadotHackathon/techconnect-chain/runtime)
+error: failed to run custom build command for `techconnectchain-runtime v0.1.0 (/Volumes/DEVLIFE/PolkadotHackathon/techconnect-chain/runtime)`
+
+Caused by:
+  process didn't exit successfully: `/Volumes/DEVLIFE/PolkadotHackathon/techconnect-chain/target/debug/build/techconnectchain-runtime-9f7f43097db40559/build-script-build` (signal: 6, SIGABRT: process abort signal)
+  --- stderr
+  dyld[43462]: bad lazy bind opcode 0x50
+warning: build failed, waiting for other jobs to finish...

@@ -39,7 +39,7 @@ pub mod pallet {
     pub type AttestationId = u64;
     pub type Epoch = u64;
 
-    #[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
+   #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo, serde::Serialize, serde::Deserialize)]
     pub struct RewardRule {
         pub event_type: BoundedVec<u8, ConstU32<32>>, // e.g., "attendance"
         pub amount: RewardAmount,
